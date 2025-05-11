@@ -11,7 +11,7 @@ import seaborn as sns
 from tqdm import tqdm
 
 # Import the ComplaintClassifier from our main module
-from classifier import ComplaintClassifier, ComplaintDataset
+from model.social_media_complaint_classifier.classifier import ComplaintClassifier, ComplaintDataset
 
 # 1. Data Loading and Exploration
 def load_and_explore_data(data_path):
