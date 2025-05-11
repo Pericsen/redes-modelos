@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 import os
-import pickle
+import dill as pickle
 from datetime import datetime
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, confusion_matrix
@@ -124,50 +124,6 @@ class ComplaintFeatureExtractor(BaseEstimator, TransformerMixin):
         
         return features
 
-class SentimentExtractor(BaseEstimator, TransformerMixin):
-    """Extract sentiment features from text"""
-    
-    def __init__(self):
-        # Words that indicate a valid complaint
-        self.positive_indicators = [
-            'gracias', 'por favor', 'solución', 'solicito', 'amablemente',
-            'podría', 'necesito', 'agradecería', 'esperando', 'cordialmente'
-        ]
-        
-        # Words that indicate venting
-        self.negative_indicators = [
-            'inútiles', 'incompetentes', 'vergüenza', 'corruptos', 'ladrones',
-            'manga', 'inaceptable', 'terrible', 'desastre', 'sinvergüenzas',
-            'chorros', 'nunca', 'jamás', 'siempre', 'como siempre', 'típico'
-        ]
-        
-    def fit(self, X, y=None):
-        return self
-        
-    def transform(self, X):
-        """Extract sentiment features from text"""
-        features = np.zeros((len(X), 3))
-        
-        for i, text in enumerate(X):
-            if isinstance(text, str):
-                text_lower = text.lower()
-                
-                # Count positive indicators
-                pos_count = sum(1 for word in self.positive_indicators if word in text_lower)
-                features[i, 0] = pos_count
-                
-                # Count negative indicators
-                neg_count = sum(1 for word in self.negative_indicators if word in text_lower)  
-                features[i, 1] = neg_count
-                
-                # Calculate ratio (with handling zero division)
-                if neg_count > 0:
-                    features[i, 2] = pos_count / neg_count
-                else:
-                    features[i, 2] = pos_count * 2  # Higher value for no negatives
-                
-        return features
-
 def preprocess_text(text):
     """Clean and preprocess text"""
     if not isinstance(text, str):
@@ -193,6 +149,7 @@ def preprocess_text(text):
 def build_complaint_classifier(model_type="xgboost"):
     """Build the classification pipeline"""
     from sklearn.ensemble import RandomForestClassifier
+    from xgboost import XGBClassifier
     
     # Define feature extraction pipeline
     features = FeatureUnion([
@@ -207,38 +164,21 @@ def build_complaint_classifier(model_type="xgboost"):
                 stop_words=list(spanish_stopwords)
             ))
         ])),
-        ('complaint_features', ComplaintFeatureExtractor()),
-        ('sentiment_features', SentimentExtractor())
+        ('complaint_features', ComplaintFeatureExtractor())
     ])
+
+    """Ver de usar optimizacion bayesiana para los hiperparametros"""
     
-    # Choose classifier based on input
-    if model_type == "xgboost":
-        try:
-            from xgboost import XGBClassifier
-            classifier = XGBClassifier(
-                n_estimators=200,
-                max_depth=5,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                use_label_encoder=False,
-                eval_metric='logloss'
-            )
-        except ImportError:
-            print("XGBoost not installed. Falling back to RandomForest.")
-            classifier = RandomForestClassifier(
-                n_estimators=200, 
-                max_depth=10,
-                random_state=42
-            )
-    else:
-        # Default to RandomForest
-        classifier = RandomForestClassifier(
-            n_estimators=200, 
-            max_depth=10,
-            random_state=42
-        )
+    classifier = XGBClassifier(
+        n_estimators=500,
+        max_depth=5,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        use_label_encoder=False,
+        eval_metric='logloss'
+    )
     
     # Full pipeline
     pipeline = Pipeline([
@@ -248,24 +188,25 @@ def build_complaint_classifier(model_type="xgboost"):
     
     return pipeline
 
-def load_and_prepare_data(fb_comments_file, labeled_data_file=None):
-    """Load Facebook comments and any labeled data available"""
+def load_and_prepare_data(comments_file, labeled_data_file=None):
+    """Load comments and any labeled data available"""
 
-    # Load Facebook comments
-    fb_df = pd.read_csv(fb_comments_file)
-
-    fb_df = fb_df.dropna(subset=['comment_text'])
+    # Load comments
+    df = pd.read_csv(comments_file)
+    df = df.dropna(subset=['comment_text'])
+    df = df.drop_duplicates(subset=['comment_text'])
+    df = df.reset_index(drop=True)
     
     # Make sure we have the right column
-    if 'comment_text' in fb_df.columns:
+    if 'comment_text' in df.columns:
         comment_col = 'comment_text'
-    elif 'message' in fb_df.columns:
+    elif 'message' in df.columns:
         comment_col = 'message'
     else:
-        raise ValueError("Could not find comments column in Facebook data")
+        raise ValueError("Could not find comments column in data")
     
     # Extract the raw text
-    comments = fb_df[comment_col].tolist()
+    comments = df[comment_col].tolist()
     
     # If we have labeled data, use it for training
     if labeled_data_file and os.path.exists(labeled_data_file):
@@ -278,10 +219,10 @@ def load_and_prepare_data(fb_comments_file, labeled_data_file=None):
         if not all(col in labeled_df.columns for col in required_cols):
             raise ValueError(f"Labeled data must have columns: {required_cols}")
         
-        return fb_df, labeled_df
+        return df, labeled_df
     else:
         # If no labeled data, return just Facebook data
-        return fb_df, None
+        return df, None
 
 def train_model_with_labeled_data(labeled_df, model_path="complaint_classifier_model.pkl"):
     """Train the model with labeled data"""
@@ -314,21 +255,21 @@ def train_model_with_labeled_data(labeled_df, model_path="complaint_classifier_m
     print(f"\nModel saved to {model_path}")
     return pipeline
 
-def predict_and_analyze(fb_df, model, comment_col='comment_text', threshold=0.5):
+def predict_and_analyze(df, model, comment_col='comment_text', threshold=0.7):
     """Make predictions on Facebook comments"""
     # Extract comments
-    comments = fb_df[comment_col].tolist()
+    comments = df[comment_col].tolist()
     
     # Get probabilities
     probas = model.predict_proba(comments)
     
     # Add predictions to dataframe
-    fb_df['complaint_probability'] = probas[:, 1]
-    fb_df['is_valid_complaint'] = (probas[:, 1] >= threshold).astype(int)
+    df['complaint_probability'] = probas[:, 1]
+    df['is_valid_complaint'] = (probas[:, 1] >= threshold).astype(int)
     
     # Show some examples of valid complaints
     print("\nTop 5 Most Likely Valid Complaints:")
-    valid_complaints = fb_df[fb_df['is_valid_complaint'] == 1].sort_values(
+    valid_complaints = df[df['is_valid_complaint'] == 1].sort_values(
         'complaint_probability', ascending=False
     ).head(5)
     
@@ -338,7 +279,7 @@ def predict_and_analyze(fb_df, model, comment_col='comment_text', threshold=0.5)
     
     # Show some examples of non-valid complaints/comments
     print("\nTop 5 Most Likely Non-Valid Comments:")
-    non_valid = fb_df[fb_df['is_valid_complaint'] == 0].sort_values(
+    non_valid = df[df['is_valid_complaint'] == 0].sort_values(
         'complaint_probability', ascending=True
     ).head(5)
     
@@ -349,46 +290,46 @@ def predict_and_analyze(fb_df, model, comment_col='comment_text', threshold=0.5)
     # Save results
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     result_file = f'classified_comments_{timestamp}.csv'
-    fb_df.to_csv(result_file, index=False)
+    df.to_csv(result_file, index=False)
     print(f"\nResults saved to {result_file}")
     
     # Summary stats
-    valid_count = fb_df['is_valid_complaint'].sum()
-    total = len(fb_df)
+    valid_count = df['is_valid_complaint'].sum()
+    total = len(df)
     print(f"\nSummary: Found {valid_count} valid complaints out of {total} comments ({valid_count/total*100:.1f}%)")
     
-    return fb_df
+    return df
 
 # Main execution functions
-def bootstrap_label_data(fb_df, sample_size=100, output_file="complaint_labels_template.csv"):
+def bootstrap_label_data(df, sample_size=300, output_file="complaint_labels_template.xlsx"):
     """Create a template file for manual labeling"""
     # If we don't have enough data, use what we have
-    sample_size = min(sample_size, len(fb_df))
+    sample_size = min(sample_size, len(df))
     
     # Get comment column
-    if 'comment_text' in fb_df.columns:
+    if 'comment_text' in df.columns:
         comment_col = 'comment_text'
-    elif 'message' in fb_df.columns:
+    elif 'message' in df.columns:
         comment_col = 'message'
     else:
         raise ValueError("Could not find comments column in Facebook data")
     
     # Take a stratified sample based on basic heuristics
-    fb_df['length'] = fb_df[comment_col].apply(lambda x: len(str(x)) if isinstance(x, str) else 0)
-    fb_df['has_numbers'] = fb_df[comment_col].apply(
+    df['length'] = df[comment_col].apply(lambda x: len(str(x)) if isinstance(x, str) else 0)
+    df['has_numbers'] = df[comment_col].apply(
         lambda x: 1 if isinstance(x, str) and bool(re.search(r'\d', x)) else 0
     )
     
     # Define a preliminary strata using length and number presence
-    fb_df['strata'] = fb_df['length'].apply(
+    df['strata'] = df['length'].apply(
         lambda x: 0 if x < 50 else (1 if x < 150 else 2)
-    ) * 2 + fb_df['has_numbers']
+    ) * 2 + df['has_numbers']
     
     # Sample from each strata
     samples = []
-    for strata in fb_df['strata'].unique():
-        strata_df = fb_df[fb_df['strata'] == strata]
-        strata_size = max(1, int(sample_size * len(strata_df) / len(fb_df)))
+    for strata in df['strata'].unique():
+        strata_df = df[df['strata'] == strata]
+        strata_size = max(1, int(sample_size * len(strata_df) / len(df)))
         
         if len(strata_df) > strata_size:
             samples.append(strata_df.sample(strata_size, random_state=42))
@@ -407,23 +348,26 @@ def bootstrap_label_data(fb_df, sample_size=100, output_file="complaint_labels_t
         'text': sample_df[comment_col],
         'is_valid_complaint': ''  # This will be filled by the person labeling
     })
+
+    labeling_df.drop_duplicates(subset=['text'], inplace=True)
+    labeling_df.reset_index(drop=True, inplace=True)
     
     # Save template
-    labeling_df.to_csv(output_file, index=False)
+    labeling_df.to_excel(output_file, index=False)
     print(f"Created labeling template with {len(labeling_df)} samples at {output_file}")
     print("Please fill the 'is_valid_complaint' column with 1 (valid) or 0 (not valid)")
     
     return labeling_df
 
-def run_active_learning(fb_comments_file, labeled_data_file=None, model_path=None):
+def run_active_learning(comments_file, labeled_data_file=None, model_path=None):
     """Main function to run the active learning process"""
     # Load data
-    fb_df, labeled_df = load_and_prepare_data(fb_comments_file, labeled_data_file)
+    df, labeled_df = load_and_prepare_data(comments_file, labeled_data_file)
     
     # Determine which comment column to use
-    if 'comment_text' in fb_df.columns:
+    if 'comment_text' in df.columns:
         comment_col = 'comment_text'
-    elif 'message' in fb_df.columns:
+    elif 'message' in df.columns:
         comment_col = 'message'
     else:
         raise ValueError("Could not find comments column in Facebook data")
@@ -431,7 +375,7 @@ def run_active_learning(fb_comments_file, labeled_data_file=None, model_path=Non
     # If no labeled data, create a template for labeling
     if labeled_df is None:
         print("\nNo labeled data found. Creating a template for manual labeling...")
-        bootstrap_label_data(fb_df)
+        bootstrap_label_data(df)
         print("\nPlease label the data and run this script again with the labeled file.")
         return
     
@@ -441,7 +385,7 @@ def run_active_learning(fb_comments_file, labeled_data_file=None, model_path=Non
     
     # Make predictions on the full dataset
     print("\nMaking predictions on all comments...")
-    result_df = predict_and_analyze(fb_df, model, comment_col)
+    result_df = predict_and_analyze(df, model, comment_col)
     
     print("\nProcess complete. You can now:")
     print("1. Review the output file with predictions")
@@ -452,10 +396,10 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Social Media Complaint Classifier')
-    parser.add_argument('fb_file', help='Path to the Facebook comments CSV file')
+    parser.add_argument('--raw', help='Path to the social media comments CSV file')
     parser.add_argument('--labeled', help='Path to labeled data CSV file (if available)')
     parser.add_argument('--model', help='Path to save/load the model', default='complaint_classifier_model.pkl')
     
     args = parser.parse_args()
     
-    run_active_learning(args.fb_file, args.labeled, args.model)
+    run_active_learning(args.raw, args.labeled, args.model)

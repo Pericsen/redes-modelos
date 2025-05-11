@@ -388,7 +388,7 @@ def main():
     classifier = ComplaintClassifier(model_name="VerificadoProfesional/SaBERT-Spanish-Sentiment-Analysis")
     
     train_dataset, val_dataset = classifier.load_and_preprocess_data(
-        data_path="data/incidentes_01-11-2024_10-05-2025.csv",
+        data_path="data/train.csv",
         text_column="observaciones",  # Column with complaint text
         label_column="areaServicioDescripcion",  # Column with complaint category
         test_size=0.2
@@ -406,7 +406,7 @@ def main():
     )
     
     # Save the trained model
-    classifier.save_model("social_media_complaint_classifier")
+    classifier.save_model("model")
     
     # Make predictions on social media text examples
     social_media_examples = [
